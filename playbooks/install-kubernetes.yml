@@ -1,0 +1,299 @@
+---
+- name: Install Kubernetes (kubelet, kubeadm, kubectl) and configure system
+  hosts: all
+  become: yes
+  gather_facts: yes
+  vars:
+    kubernetes_version: "v1.34"
+    kubernetes_packages:
+      - kubelet
+      - kubeadm
+      - kubectl
+    
+  tasks:
+    # System preparation and updates
+    - name: Update apt package index
+      apt:
+        update_cache: yes
+        cache_valid_time: 3600
+      tags:
+        - kubernetes
+        - preparation
+
+    - name: Install required packages for Kubernetes repository
+      apt:
+        name:
+          - apt-transport-https
+          - ca-certificates
+          - curl
+          - gpg
+        state: present
+        update_cache: yes
+      tags:
+        - kubernetes
+        - preparation
+
+    - name: Create directory for apt keyrings
+      file:
+        path: /etc/apt/keyrings
+        state: directory
+        mode: '0755'
+      tags:
+        - kubernetes
+        - preparation
+
+    # Kubernetes repository setup
+    - name: Download Kubernetes GPG key
+      shell: |
+        curl -fsSL https://pkgs.k8s.io/core:/stable:/{{ kubernetes_version }}/deb/Release.key | gpg --dearmor -o /etc/apt/keyrings/kubernetes-apt-keyring.gpg
+      args:
+        creates: /etc/apt/keyrings/kubernetes-apt-keyring.gpg
+      tags:
+        - kubernetes
+        - repository
+
+    - name: Add Kubernetes repository to apt sources
+      lineinfile:
+        path: /etc/apt/sources.list.d/kubernetes.list
+        line: "deb [signed-by=/etc/apt/keyrings/kubernetes-apt-keyring.gpg] https://pkgs.k8s.io/core:/stable:/{{ kubernetes_version }}/deb/ /"
+        create: yes
+        mode: '0644'
+      tags:
+        - kubernetes
+        - repository
+
+    - name: Update apt package index after adding Kubernetes repository
+      apt:
+        update_cache: yes
+      tags:
+        - kubernetes
+        - repository
+
+    # Kubernetes packages installation
+    - name: Install Kubernetes packages
+      apt:
+        name: "{{ kubernetes_packages }}"
+        state: present
+        update_cache: yes
+      tags:
+        - kubernetes
+        - installation
+
+    - name: Hold Kubernetes packages to prevent automatic updates
+      dpkg_selections:
+        name: "{{ item }}"
+        selection: hold
+      loop: "{{ kubernetes_packages }}"
+      tags:
+        - kubernetes
+        - installation
+
+    - name: Enable and start kubelet service
+      systemd:
+        name: kubelet
+        enabled: yes
+        state: started
+        daemon_reload: yes
+      tags:
+        - kubernetes
+        - service
+
+    # System configuration for Kubernetes
+    - name: Disable swap immediately
+      command: swapoff -a
+      tags:
+        - kubernetes
+        - system_config
+
+    - name: Disable swap permanently in fstab
+      replace:
+        path: /etc/fstab
+        regexp: '^(.+?\sswap\s+sw\s+.*)$'
+        replace: '# \1'
+      tags:
+        - kubernetes
+        - system_config
+
+    - name: Create sysctl configuration for Kubernetes networking
+      copy:
+        content: |
+          net.bridge.bridge-nf-call-ip6tables = 1
+          net.bridge.bridge-nf-call-iptables = 1
+        dest: /etc/sysctl.d/k8s.conf
+        mode: '0644'
+      tags:
+        - kubernetes
+        - network_config
+
+    - name: Apply sysctl configuration
+      command: sysctl --system
+      tags:
+        - kubernetes
+        - network_config
+
+    - name: Load br_netfilter module
+      modprobe:
+        name: br_netfilter
+        state: present
+      tags:
+        - kubernetes
+        - network_config
+
+    - name: Enable br_netfilter module persistently
+      lineinfile:
+        path: /etc/modules-load.d/br_netfilter.conf
+        line: "br_netfilter"
+        create: yes
+        mode: '0644'
+      tags:
+        - kubernetes
+        - network_config
+
+    - name: Disable UFW firewall
+      ufw:
+        state: disabled
+      tags:
+        - kubernetes
+        - firewall
+
+    # Container runtime configuration
+    - name: Create crictl configuration
+      copy:
+        content: |
+          runtime-endpoint: "unix:///run/containerd/containerd.sock"
+        dest: /etc/crictl.yaml
+        mode: '0644'
+      tags:
+        - kubernetes
+        - container_runtime
+
+    - name: Create containerd configuration directory
+      file:
+        path: /etc/containerd
+        state: directory
+        mode: '0755'
+      tags:
+        - kubernetes
+        - container_runtime
+
+    - name: Generate containerd default configuration
+      shell: containerd config default > /etc/containerd/config.toml
+      args:
+        creates: /etc/containerd/config.toml
+      tags:
+        - kubernetes
+        - container_runtime
+
+    - name: Configure containerd to use systemd cgroup driver
+      replace:
+        path: /etc/containerd/config.toml
+        regexp: 'SystemdCgroup = false'
+        replace: 'SystemdCgroup = true'
+      notify:
+        - restart containerd
+        - restart kubelet
+      tags:
+        - kubernetes
+        - container_runtime
+
+    # Service management
+    - name: Reload systemd daemon
+      systemd:
+        daemon_reload: yes
+      tags:
+        - kubernetes
+        - service
+
+    # Verification tasks
+    - name: Check if br_netfilter module is loaded
+      command: lsmod
+      register: lsmod_output
+      changed_when: false
+      tags:
+        - kubernetes
+        - verification
+
+    - name: Verify br_netfilter is loaded
+      debug:
+        msg: "br_netfilter module is {{ 'loaded' if 'br_netfilter' in lsmod_output.stdout else 'NOT loaded' }}"
+      tags:
+        - kubernetes
+        - verification
+
+    - name: Check bridge netfilter sysctl file exists
+      stat:
+        path: /proc/sys/net/bridge/bridge-nf-call-iptables
+      register: bridge_sysctl
+      tags:
+        - kubernetes
+        - verification
+
+    - name: Verify bridge netfilter sysctl
+      debug:
+        msg: "Bridge netfilter sysctl {{ 'exists' if bridge_sysctl.stat.exists else 'does NOT exist' }}"
+      tags:
+        - kubernetes
+        - verification
+
+    - name: Check kubelet service status
+      systemd:
+        name: kubelet
+      register: kubelet_status
+      tags:
+        - kubernetes
+        - verification
+
+    - name: Display kubelet service status
+      debug:
+        msg: "Kubelet service is {{ kubelet_status.status.ActiveState }}"
+      tags:
+        - kubernetes
+        - verification
+
+    - name: Verify Kubernetes packages installation
+      command: "{{ item.cmd }}"
+      register: k8s_versions
+      changed_when: false
+      failed_when: false
+      loop:
+        - { cmd: "kubelet --version", name: "kubelet" }
+        - { cmd: "kubeadm version", name: "kubeadm" }
+        - { cmd: "kubectl version --client", name: "kubectl" }
+      tags:
+        - kubernetes
+        - verification
+
+    - name: Display Kubernetes package versions
+      debug:
+        msg: "{{ item.item.name }}: {{ item.stdout if item.rc == 0 else 'Command failed: ' + item.stderr }}"
+      loop: "{{ k8s_versions.results }}"
+      tags:
+        - kubernetes
+        - verification
+
+    - name: Check containerd configuration for SystemdCgroup
+      shell: grep SystemdCgroup /etc/containerd/config.toml
+      register: systemd_cgroup_check
+      changed_when: false
+      failed_when: false
+      tags:
+        - kubernetes
+        - verification
+
+    - name: Display containerd cgroup configuration
+      debug:
+        msg: "Containerd cgroup config: {{ systemd_cgroup_check.stdout if systemd_cgroup_check.stdout else 'Not configured' }}"
+      tags:
+        - kubernetes
+        - verification
+
+  handlers:
+    - name: restart containerd
+      systemd:
+        name: containerd
+        state: restarted
+
+    - name: restart kubelet
+      systemd:
+        name: kubelet
+        state: restarted

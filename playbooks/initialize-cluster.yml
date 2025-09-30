@@ -1,0 +1,366 @@
+---
+- name: Initialize Kubernetes cluster and join nodes
+  hosts: localhost
+  connection: local
+  gather_facts: no
+  vars:
+    control_plane_endpoint: "192.168.100.74:6443"
+    pod_network_cidr: "10.244.0.0/16"
+    cluster_name: "kubernetes"
+    
+  tasks:
+    - name: Display cluster initialization information
+      debug:
+        msg: |
+          Starting Kubernetes cluster initialization:
+          - Control Plane Endpoint: {{ control_plane_endpoint }}
+          - Pod Network CIDR: {{ pod_network_cidr }}
+          - Primary Master: {{ groups['masters'][0] }}
+          - Additional Masters: {{ groups['masters'][1:] | join(', ') if groups['masters'] | length > 1 else 'None' }}
+          - Workers: {{ groups['workers'] | join(', ') }}
+
+# Initialize the cluster on the first master node
+- name: Initialize Kubernetes cluster on primary master
+  hosts: "{{ groups['masters'][0] }}"
+  become: yes
+  gather_facts: yes
+  vars:
+    control_plane_endpoint: "192.168.100.74:6443"
+    pod_network_cidr: "10.244.0.0/16"
+    
+  tasks:
+    - name: Check if cluster is already initialized
+      stat:
+        path: /etc/kubernetes/admin.conf
+      register: cluster_initialized
+
+    - name: Initialize Kubernetes cluster
+      command: >
+        kubeadm init 
+        --control-plane-endpoint={{ control_plane_endpoint }}
+        --upload-certs
+        --pod-network-cidr={{ pod_network_cidr }}
+        --apiserver-advertise-address={{ ansible_host }}
+      register: kubeadm_init_output
+      when: not cluster_initialized.stat.exists
+
+    - name: Display kubeadm init output
+      debug:
+        var: kubeadm_init_output.stdout_lines
+      when: kubeadm_init_output is defined and kubeadm_init_output.stdout is defined
+
+    - name: Create .kube directory for root user
+      file:
+        path: /root/.kube
+        state: directory
+        mode: '0755'
+
+    - name: Copy admin.conf to .kube/config for root user
+      copy:
+        src: /etc/kubernetes/admin.conf
+        dest: /root/.kube/config
+        remote_src: yes
+        owner: root
+        group: root
+        mode: '0644'
+
+    - name: Create .kube directory for ansible user
+      file:
+        path: "/home/{{ ansible_user }}/.kube"
+        state: directory
+        mode: '0755'
+        owner: "{{ ansible_user }}"
+        group: "{{ ansible_user }}"
+
+    - name: Copy admin.conf to .kube/config for ansible user
+      copy:
+        src: /etc/kubernetes/admin.conf
+        dest: "/home/{{ ansible_user }}/.kube/config"
+        remote_src: yes
+        owner: "{{ ansible_user }}"
+        group: "{{ ansible_user }}"
+        mode: '0644'
+
+    - name: Extract worker join token
+      shell: kubeadm token create --print-join-command
+      register: worker_join_command
+      when: not cluster_initialized.stat.exists or kubeadm_init_output is defined
+
+    - name: Extract certificate key for master join
+      shell: kubeadm init phase upload-certs --upload-certs | tail -1
+      register: certificate_key
+      when: not cluster_initialized.stat.exists or kubeadm_init_output is defined
+
+    - name: Create master join command
+      set_fact:
+        master_join_command: "{{ worker_join_command.stdout }} --control-plane --certificate-key {{ certificate_key.stdout }}"
+      when: worker_join_command is defined and certificate_key is defined
+
+    - name: Display join commands
+      debug:
+        msg: |
+          Worker join command: {{ worker_join_command.stdout }}
+          Master join command: {{ master_join_command }}
+      when: worker_join_command is defined and master_join_command is defined
+
+    - name: Save join commands to local files
+      local_action:
+        module: copy
+        content: |
+          # Kubernetes Cluster Join Commands
+          # Generated on {{ ansible_date_time.iso8601 }}
+          
+          # Worker Join Command:
+          {{ worker_join_command.stdout }}
+          
+          # Master Join Command:
+          {{ master_join_command }}
+          
+          # Certificate Key (valid for 2 hours):
+          {{ certificate_key.stdout }}
+        dest: ./cluster-join-commands.txt
+      when: worker_join_command is defined and master_join_command is defined
+
+    - name: Check cluster status
+      command: kubectl get nodes
+      register: cluster_status
+      environment:
+        KUBECONFIG: /etc/kubernetes/admin.conf
+
+    - name: Display cluster status
+      debug:
+        var: cluster_status.stdout_lines
+
+# Join additional master nodes to the cluster
+- name: Join additional master nodes to cluster
+  hosts: "{{ groups['masters'][1:] }}"
+  become: yes
+  gather_facts: yes
+  serial: 1
+  vars:
+    master_join_command: "{{ hostvars[groups['masters'][0]]['master_join_command'] }}"
+    
+  tasks:
+    - name: Check if node is already joined
+      stat:
+        path: /etc/kubernetes/kubelet.conf
+      register: node_joined
+
+    - name: Join master node to cluster
+      command: "{{ master_join_command }}"
+      register: master_join_output
+      when: not node_joined.stat.exists and master_join_command is defined
+
+    - name: Display master join output
+      debug:
+        var: master_join_output.stdout_lines
+      when: master_join_output is defined and master_join_output.stdout is defined
+
+    - name: Create .kube directory for root user
+      file:
+        path: /root/.kube
+        state: directory
+        mode: '0755'
+      when: master_join_output is defined and master_join_output.rc == 0
+
+    - name: Copy admin.conf to .kube/config for root user
+      copy:
+        src: /etc/kubernetes/admin.conf
+        dest: /root/.kube/config
+        remote_src: yes
+        owner: root
+        group: root
+        mode: '0644'
+      when: master_join_output is defined and master_join_output.rc == 0
+
+    - name: Create .kube directory for ansible user
+      file:
+        path: "/home/{{ ansible_user }}/.kube"
+        state: directory
+        mode: '0755'
+        owner: "{{ ansible_user }}"
+        group: "{{ ansible_user }}"
+      when: master_join_output is defined and master_join_output.rc == 0
+
+    - name: Copy admin.conf to .kube/config for ansible user
+      copy:
+        src: /etc/kubernetes/admin.conf
+        dest: "/home/{{ ansible_user }}/.kube/config"
+        remote_src: yes
+        owner: "{{ ansible_user }}"
+        group: "{{ ansible_user }}"
+        mode: '0644'
+      when: master_join_output is defined and master_join_output.rc == 0
+
+# Join worker nodes to the cluster
+- name: Join worker nodes to cluster
+  hosts: workers
+  become: yes
+  gather_facts: yes
+  serial: 2
+  vars:
+    worker_join_command: "{{ hostvars[groups['masters'][0]]['worker_join_command']['stdout'] }}"
+    
+  tasks:
+    - name: Check if node is already joined
+      stat:
+        path: /etc/kubernetes/kubelet.conf
+      register: node_joined
+
+    - name: Join worker node to cluster
+      command: "{{ worker_join_command }}"
+      register: worker_join_output
+      when: not node_joined.stat.exists and worker_join_command is defined
+
+    - name: Display worker join output
+      debug:
+        var: worker_join_output.stdout_lines
+      when: worker_join_output is defined and worker_join_output.stdout is defined
+
+# Verify cluster status from primary master
+- name: Verify cluster status
+  hosts: "{{ groups['masters'][0] }}"
+  become: yes
+  gather_facts: no
+  
+  tasks:
+    - name: Wait for all nodes to be ready
+      shell: kubectl get nodes --no-headers | grep -v Ready | wc -l
+      register: nodes_not_ready
+      until: nodes_not_ready.stdout == "0"
+      retries: 30
+      delay: 10
+      environment:
+        KUBECONFIG: /etc/kubernetes/admin.conf
+
+    - name: Get final cluster status
+      command: kubectl get nodes -o wide
+      register: final_cluster_status
+      environment:
+        KUBECONFIG: /etc/kubernetes/admin.conf
+
+    - name: Display final cluster status
+      debug:
+        msg: |
+          Kubernetes cluster initialization completed!
+          
+          Cluster Status:
+          {{ final_cluster_status.stdout }}
+
+    - name: Get cluster info
+      command: kubectl cluster-info
+      register: cluster_info
+      environment:
+        KUBECONFIG: /etc/kubernetes/admin.conf
+
+    - name: Display cluster info
+      debug:
+        var: cluster_info.stdout_lines
+
+    - name: Save cluster admin config locally
+      fetch:
+        src: /etc/kubernetes/admin.conf
+        dest: ./admin.conf
+        flat: yes
+      
+    - name: Display next steps
+      debug:
+        msg: |
+          Kubernetes cluster is ready!
+          
+          Next steps:
+          1. Install a CNI plugin (e.g., Flannel):
+             kubectl apply -f https://github.com/flannel-io/flannel/releases/latest/download/kustomization.yaml
+          
+          2. Copy admin.conf to your local machine:
+             Admin config saved to: ./admin.conf
+             
+          3. Verify cluster access:
+             kubectl --kubeconfig=./admin.conf get nodes
+             
+          4. Access the cluster through the load balancer:
+             kubectl --server=https://192.168.100.74:6443 --kubeconfig=./admin.conf get nodes
+
+# Configure kubectl and bash completion on all master nodes
+- name: Configure kubectl and bash completion on master nodes
+  hosts: masters
+  become: yes
+  gather_facts: yes
+  tags: kubectl_config
+
+  tasks:
+    - name: Create .kube directory for ansible user
+      file:
+        path: "/home/{{ ansible_user }}/.kube"
+        state: directory
+        mode: '0755'
+        owner: "{{ ansible_user }}"
+        group: "{{ ansible_user }}"
+
+    - name: Copy admin.conf to user .kube/config
+      copy:
+        src: /etc/kubernetes/admin.conf
+        dest: "/home/{{ ansible_user }}/.kube/config"
+        remote_src: yes
+        owner: "{{ ansible_user }}"
+        group: "{{ ansible_user }}"
+        mode: '0644'
+
+    - name: Install bash-completion package
+      apt:
+        name: bash-completion
+        state: present
+        update_cache: yes
+
+    - name: Check if kubectl completion is already in .bashrc
+      shell: grep -q "kubectl completion bash" "/home/{{ ansible_user }}/.bashrc" || echo "not_found"
+      register: kubectl_completion_check
+      become: no
+      ignore_errors: yes
+
+    - name: Add bash-completion source to .bashrc
+      lineinfile:
+        path: "/home/{{ ansible_user }}/.bashrc"
+        line: "source /usr/share/bash-completion/bash_completion"
+        state: present
+        create: yes
+      when: kubectl_completion_check.stdout == "not_found"
+      become: no
+
+    - name: Add kubectl completion to .bashrc
+      lineinfile:
+        path: "/home/{{ ansible_user }}/.bashrc"
+        line: "source <(kubectl completion bash)"
+        state: present
+        create: yes
+      when: kubectl_completion_check.stdout == "not_found"
+      become: no
+
+    - name: Verify kubectl configuration
+      command: kubectl get nodes
+      register: kubectl_verify
+      become: no
+      environment:
+        KUBECONFIG: "/home/{{ ansible_user }}/.kube/config"
+      ignore_errors: yes
+
+    - name: Display kubectl verification result
+      debug:
+        msg: |
+          kubectl configuration status:
+          {% if kubectl_verify.rc == 0 %}
+          ✅ kubectl is working correctly on {{ inventory_hostname }}
+          {% else %}
+          ❌ kubectl configuration issue on {{ inventory_hostname }}
+          Error: {{ kubectl_verify.stderr }}
+          {% endif %}
+
+    - name: Display completion setup status
+      debug:
+        msg: |
+          Bash completion setup completed on {{ inventory_hostname }}:
+          - kubectl config: /home/{{ ansible_user }}/.kube/config
+          - bash-completion: installed
+          - kubectl completion: added to .bashrc
+          
+          Note: Start a new shell session or run 'source ~/.bashrc' to enable completion

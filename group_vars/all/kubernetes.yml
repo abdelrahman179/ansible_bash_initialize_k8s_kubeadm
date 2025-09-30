@@ -1,0 +1,74 @@
+# Kubernetes installation configuration variables
+---
+
+# Kubernetes version configuration
+kubernetes:
+  version: "v1.34"  # Latest stable version
+  components:
+    - kubelet
+    - kubeadm 
+    - kubectl
+
+# Container runtime configuration
+container_runtime:
+  name: "containerd"
+  enabled: true
+  socket: "/run/containerd/containerd.sock"
+
+# Network configuration
+network:
+  pod_cidr: "10.244.0.0/16"  # Default for Flannel CNI
+  service_cidr: "10.96.0.0/12"  # Default Kubernetes service network
+  
+# System configuration
+system:
+  swap_disabled: true
+  ufw_disabled: true
+  ipv4_forwarding: true
+  bridge_netfilter: true
+  
+# Repository configuration  
+repository:
+  apt_key_url: "https://pkgs.k8s.io/core:/stable:/v1.34/deb/Release.key"
+  apt_repository: "deb [signed-by=/etc/apt/keyrings/kubernetes-apt-keyring.gpg] https://pkgs.k8s.io/core:/stable:/v1.34/deb/ /"
+  keyring_path: "/etc/apt/keyrings/kubernetes-apt-keyring.gpg"
+
+# Firewall ports that may need to be opened (for reference)
+firewall_ports:
+  master:
+    - "6443/tcp"    # Kubernetes API server
+    - "2379-2380/tcp"  # etcd server client API
+    - "10250/tcp"   # Kubelet API
+    - "10259/tcp"   # kube-scheduler
+    - "10257/tcp"   # kube-controller-manager
+  worker:
+    - "10250/tcp"   # Kubelet API
+    - "30000-32767/tcp"  # NodePort Services
+  all:
+    - "443/tcp"     # HTTPS
+    - "53/udp"      # DNS
+    - "53/tcp"      # DNS
+
+# Prerequisites verification
+prerequisites:
+  min_memory_gb: 2
+  min_disk_gb: 20
+  required_commands:
+    - systemctl
+    - curl
+    - apt-get
+  
+# Service configuration
+services:
+  kubelet:
+    enabled: true
+    state: started
+  containerd:
+    enabled: true  
+    state: started
+
+# CNI information (for reference - not installed by this playbook)
+cni:
+  recommended: "flannel"
+  url: "https://github.com/flannel-io/flannel/releases/latest/download/kustomization.yaml"
+  pod_cidr: "10.244.0.0/16"

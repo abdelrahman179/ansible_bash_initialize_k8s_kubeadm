@@ -1,0 +1,47 @@
+---
+- name: Configure Netplan Network Settings to reserve static IPs
+  hosts: all
+  become: yes
+  gather_facts: yes
+  
+  vars:
+    netplan_config_file: "/etc/netplan/01-network-config.yaml"
+    
+  tasks:
+    - name: Create new netplan configuration
+      ansible.builtin.template:
+        src: ../templates/netplan.yaml.j2
+        dest: "{{ netplan_config_file }}"
+        owner: root
+        group: root
+        mode: '0600'
+      notify: 
+        - apply netplan
+        
+    - name: Set correct ownership for netplan files
+      ansible.builtin.file:
+        path: /etc/netplan/
+        owner: root
+        group: root
+        recurse: yes
+        
+    - name: Set correct permissions for netplan files
+      ansible.builtin.find:
+        paths: /etc/netplan/
+        patterns: "*.yaml"
+      register: netplan_files
+      
+    - name: Apply correct permissions to netplan files
+      ansible.builtin.file:
+        path: "{{ item.path }}"
+        mode: '0600'
+      loop: "{{ netplan_files.files }}"
+      
+  handlers:
+    - name: apply netplan
+      ansible.builtin.command: netplan apply --debug
+      register: netplan_result
+      
+    - name: display netplan output
+      ansible.builtin.debug:
+        var: netplan_result

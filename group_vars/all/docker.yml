@@ -1,0 +1,18 @@
+# Docker installation configuration
+# Set to true to add the ansible_user to the docker group (allows running docker without sudo)
+add_user_to_docker_group: true
+
+# Set to true to test Docker installation with hello-world container
+test_docker_installation: true
+
+# Docker packages to install
+docker_packages:
+  - docker-ce
+  - docker-ce-cli
+  - containerd.io
+  - docker-buildx-plugin
+  - docker-compose-plugin
+
+# Docker service configuration
+docker_service_enabled: true
+docker_service_state: started

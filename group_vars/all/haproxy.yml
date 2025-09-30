@@ -1,0 +1,97 @@
+# HAProxy configuration variables
+---
+
+# HAProxy service configuration
+haproxy:
+  version: "2.8"
+  enabled: true
+  
+# Kubernetes API server configuration
+kubernetes_api:
+  port: 6443
+  health_check_interval: 10
+  health_check_timeout: 5
+  max_connections_per_server: 250
+  
+# Load balancing configuration
+load_balancing:
+  algorithm: "roundrobin"  # roundrobin, leastconn, source
+  health_checks: true
+  rise_threshold: 2        # Number of successful checks before server is considered UP
+  fall_threshold: 2        # Number of failed checks before server is considered DOWN
+  inter_check_interval: 10 # Health check interval in seconds
+  downinter_interval: 5    # Health check interval when server is DOWN
+  
+# HAProxy statistics interface
+haproxy_stats:
+  enabled: true
+  port: 8404
+  uri: "/stats"
+  username: "admin"
+  password: "admin123"
+  refresh_interval: 30
+  realm: "HAProxy Statistics"
+  
+# Optional HTTP/HTTPS frontend configuration
+http_frontend:
+  enabled: true
+  port: 80
+  redirect_to_https: true
+  
+https_frontend:
+  enabled: true
+  port: 443
+  
+# Health check endpoint
+health_check:
+  enabled: true
+  port: 8080
+  uri: "/health"
+  
+# Logging configuration
+logging:
+  enabled: true
+  level: "info"
+  facility: "local0"
+  
+# SSL/TLS configuration
+ssl:
+  min_version: "TLSv1.2"
+  ciphers: "ECDH+AESGCM:DH+AESGCM:ECDH+AES256:DH+AES256:ECDH+AES128:DH+AES:RSA+AESGCM:RSA+AES:!aNULL:!MD5:!DSS"
+  
+# Timeout configuration (in seconds)
+timeouts:
+  http_request: 10
+  queue: 20
+  connect: 10
+  client: 300
+  server: 300
+  http_keep_alive: 10
+  check: 10
+  
+# Connection limits
+connection_limits:
+  maxconn_global: 3000
+  maxconn_per_server: 250
+  maxqueue_per_server: 256
+  
+# Firewall ports to open (if UFW is enabled)
+firewall_ports:
+  - 6443  # Kubernetes API server
+  - 8404  # HAProxy stats
+  - 80    # HTTP
+  - 443   # HTTPS
+  - 8080  # Health check
+
+# Backend server configuration
+backend_servers:
+  slowstart: 60           # Gradual ramp-up time in seconds
+  weight: 100            # Default weight for load balancing
+  check_timeout: 10      # Individual check timeout
+  
+# Monitoring and alerting
+monitoring:
+  log_health_checks: true
+  stats_admin: true
+  show_legends: true
+  show_node_info: true

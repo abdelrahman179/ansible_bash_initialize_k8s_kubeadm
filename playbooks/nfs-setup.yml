@@ -1,0 +1,132 @@
+---
+- name: Setup NFS Storage for Kubernetes
+  hosts: all
+  become: yes
+  gather_facts: yes
+  vars:
+    nfs_server: "{{ ansible_nfs_server }}"
+    nfs_share_dir: "{{ ansible_nfs_share_dir }}"
+    
+  tasks:
+    - name: Display NFS configuration
+      debug:
+        msg: |
+          NFS Server: {{ nfs_server }}
+          Share Directory: {{ nfs_share_dir }}
+          Current Node: {{ inventory_hostname }}
+          Node Type: {{ 'SERVER' if inventory_hostname == nfs_server else 'CLIENT' }}
+
+    # Install packages based on node role
+    - name: Install NFS server package
+      apt:
+        name: nfs-kernel-server
+        state: present
+        update_cache: yes
+      when: inventory_hostname == nfs_server
+      tags: nfs_server
+
+    - name: Install NFS client package
+      apt:
+        name: nfs-common
+        state: present
+        update_cache: yes
+      when: inventory_hostname != nfs_server
+      tags: nfs_client
+
+    # Create directory on all nodes
+    - name: Create NFS share directory
+      file:
+        path: "{{ nfs_share_dir }}"
+        state: directory
+        mode: '0777'
+        owner: root
+        group: root
+      tags: directory
+
+    # Configure NFS server
+    - name: Enable and start NFS server
+      systemd:
+        name: nfs-kernel-server
+        enabled: yes
+        state: started
+        daemon_reload: yes
+      when: inventory_hostname == nfs_server
+      tags: nfs_server
+
+    - name: Get all node IPs for exports
+      set_fact:
+        all_node_ips: "{{ groups['all'] | map('extract', hostvars, 'ansible_host') | list }}"
+      when: inventory_hostname == nfs_server
+      tags: nfs_server
+
+    - name: Configure NFS exports
+      blockinfile:
+        path: /etc/exports
+        block: |
+          # Kubernetes NFS Share - Auto-generated
+          {% for ip in all_node_ips %}
+          {{ nfs_share_dir }} {{ ip }}(rw,sync,no_root_squash,no_subtree_check)
+          {% endfor %}
+        marker: "# {mark} KUBERNETES NFS EXPORTS"
+        create: yes
+      when: inventory_hostname == nfs_server
+      notify: restart nfs server
+      tags: nfs_server
+
+    - name: Export NFS shares
+      command: exportfs -a
+      when: inventory_hostname == nfs_server
+      tags: nfs_server
+
+    # Mount on client nodes
+    - name: Get NFS server IP
+      set_fact:
+        nfs_server_ip: "{{ hostvars[nfs_server]['ansible_host'] }}"
+      when: inventory_hostname != nfs_server
+      tags: nfs_client
+
+    - name: Check if NFS is already mounted
+      mount:
+        path: "{{ nfs_share_dir }}"
+        src: "{{ nfs_server_ip }}:{{ nfs_share_dir }}"
+        fstype: nfs
+        state: mounted
+        opts: defaults
+      when: inventory_hostname != nfs_server
+      tags: nfs_client
+
+    # Test NFS functionality
+    - name: Create test file on NFS server
+      file:
+        path: "{{ nfs_share_dir }}/nfs-test-{{ ansible_date_time.epoch }}.txt"
+        state: touch
+        mode: '0666'
+      when: inventory_hostname == nfs_server
+      tags: test
+
+    - name: Verify NFS mount on clients
+      stat:
+        path: "{{ nfs_share_dir }}"
+      register: nfs_mount_check
+      when: inventory_hostname != nfs_server
+      tags: test
+
+    - name: Display NFS mount status
+      debug:
+        msg: "NFS mount {{ 'SUCCESS' if nfs_mount_check.stat.exists else 'FAILED' }} on {{ inventory_hostname }}"
+      when: inventory_hostname != nfs_server
+      tags: test
+
+    # Set local-path as default storage class
+    - name: Set local-path as default storage class
+      shell: |
+        kubectl patch storageclass local-path -p '{"metadata": {"annotations": {"storageclass.kubernetes.io/is-default-class": "true"}}}'
+      when: inventory_hostname == nfs_server
+      tags: storage_class
+      ignore_errors: yes
+
+  handlers:
+    - name: restart nfs server
+      systemd:
+        name: nfs-kernel-server
+        state: restarted

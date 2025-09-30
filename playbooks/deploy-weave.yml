@@ -1,0 +1,265 @@
+---
+- name: Deploy Weave CNI plugin and configure cluster
+  hosts: "{{ groups['masters'][0] }}"
+  become: yes
+  gather_facts: yes
+  vars:
+    manifests_dir: "/home/rog/Kubernetes/manifests"
+    
+  tasks:
+    - name: Check if cluster is accessible
+      command: kubectl get nodes
+      register: cluster_status
+      environment:
+        KUBECONFIG: /etc/kubernetes/admin.conf
+      tags:
+        - verify
+        - cluster_check
+
+    - name: Display current cluster status
+      debug:
+        msg: "{{ cluster_status.stdout_lines }}"
+      tags:
+        - verify
+        - cluster_check
+
+    - name: Create manifests directory on remote host
+      file:
+        path: /tmp/k8s-manifests
+        state: directory
+        mode: '0755'
+      tags:
+        - weave
+        - prepare
+
+    - name: Copy Weave manifest to remote host
+      copy:
+        src: "{{ manifests_dir }}/weave.yaml"
+        dest: /tmp/k8s-manifests/weave.yaml
+        mode: '0644'
+      tags:
+        - weave
+        - prepare
+
+    - name: Check if Weave is already deployed
+      shell: kubectl get pods -n kube-system | grep weave
+      register: weave_status
+      failed_when: false
+      environment:
+        KUBECONFIG: /etc/kubernetes/admin.conf
+      tags:
+        - weave
+        - check
+
+    - name: Apply Weave CNI plugin from local manifest
+      command: kubectl apply -f /tmp/k8s-manifests/weave.yaml
+      register: weave_apply
+      environment:
+        KUBECONFIG: /etc/kubernetes/admin.conf
+      when: weave_status.rc != 0
+      tags:
+        - weave
+        - deploy
+
+    - name: Display Weave deployment result
+      debug:
+        msg: "{{ weave_apply.stdout_lines }}"
+      when: weave_apply is defined
+      tags:
+        - weave
+        - deploy
+
+    - name: Wait for Weave pods to be ready
+      shell: kubectl wait --for=condition=Ready pod -l name=weave-net -n kube-system --timeout=300s
+      register: weave_wait
+      environment:
+        KUBECONFIG: /etc/kubernetes/admin.conf
+      tags:
+        - weave
+        - wait
+
+    - name: Verify Weave pods status
+      command: kubectl get pods -n kube-system -l name=weave-net -o wide
+      register: weave_pods
+      environment:
+        KUBECONFIG: /etc/kubernetes/admin.conf
+      tags:
+        - weave
+        - verify
+
+    - name: Display Weave pods status
+      debug:
+        msg: "{{ weave_pods.stdout_lines }}"
+      tags:
+        - weave
+        - verify
+
+    - name: Check kube-system DNS pods status
+      command: kubectl get pods -n kube-system -l k8s-app=kube-dns -o wide
+      register: dns_pods
+      environment:
+        KUBECONFIG: /etc/kubernetes/admin.conf
+      tags:
+        - dns
+        - verify
+
+    - name: Display DNS pods status
+      debug:
+        msg: "{{ dns_pods.stdout_lines }}"
+      tags:
+        - dns
+        - verify
+
+    - name: Check CoreDNS pods status (alternative)
+      command: kubectl get pods -n kube-system -l k8s-app=coredns -o wide
+      register: coredns_pods
+      environment:
+        KUBECONFIG: /etc/kubernetes/admin.conf
+      failed_when: false
+      tags:
+        - dns
+        - verify
+
+    - name: Display CoreDNS pods status
+      debug:
+        msg: "{{ coredns_pods.stdout_lines }}"
+      when: coredns_pods.rc == 0
+      tags:
+        - dns
+        - verify
+
+    - name: Get all kube-system pods status
+      command: kubectl get pods -n kube-system -o wide
+      register: all_system_pods
+      environment:
+        KUBECONFIG: /etc/kubernetes/admin.conf
+      tags:
+        - verify
+        - system_pods
+
+    - name: Display all kube-system pods
+      debug:
+        msg: "{{ all_system_pods.stdout_lines }}"
+      tags:
+        - verify
+        - system_pods
+
+    - name: Check current node taints
+      command: kubectl get nodes -o custom-columns=NAME:.metadata.name,TAINTS:.spec.taints
+      register: node_taints_before
+      environment:
+        KUBECONFIG: /etc/kubernetes/admin.conf
+      tags:
+        - taint
+        - check
+
+    - name: Display current node taints
+      debug:
+        msg: "{{ node_taints_before.stdout_lines }}"
+      tags:
+        - taint
+        - check
+
+    - name: Remove control-plane taint from all nodes
+      command: kubectl taint nodes --all node-role.kubernetes.io/control-plane-
+      register: taint_removal
+      environment:
+        KUBECONFIG: /etc/kubernetes/admin.conf
+      failed_when: false
+      tags:
+        - taint
+        - remove
+
+    - name: Display taint removal result
+      debug:
+        msg: "{{ taint_removal.stdout_lines if taint_removal.stdout_lines else 'Taint removal completed' }}"
+      tags:
+        - taint
+        - remove
+
+    - name: Check node taints after removal
+      command: kubectl get nodes -o custom-columns=NAME:.metadata.name,TAINTS:.spec.taints
+      register: node_taints_after
+      environment:
+        KUBECONFIG: /etc/kubernetes/admin.conf
+      tags:
+        - taint
+        - verify
+
+    - name: Display node taints after removal
+      debug:
+        msg: "{{ node_taints_after.stdout_lines }}"
+      tags:
+        - taint
+        - verify
+
+    - name: Verify all nodes are ready
+      command: kubectl get nodes -o wide
+      register: final_nodes_status
+      environment:
+        KUBECONFIG: /etc/kubernetes/admin.conf
+      tags:
+        - verify
+        - final
+
+    - name: Display final cluster status
+      debug:
+        msg: "{{ final_nodes_status.stdout_lines }}"
+      tags:
+        - verify
+        - final
+
+    - name: Generate cluster summary
+      shell: |
+        echo "=== KUBERNETES CLUSTER POST-DEPLOYMENT SUMMARY ==="
+        echo "Date: $(date)"
+        echo ""
+        echo "=== CLUSTER NODES ==="
+        kubectl get nodes -o wide
+        echo ""
+        echo "=== WEAVE CNI PODS ==="
+        kubectl get pods -n kube-system -l name=weave-net -o wide
+        echo ""
+        echo "=== DNS PODS ==="
+        kubectl get pods -n kube-system -l k8s-app=coredns -o wide
+        echo ""
+        echo "=== ALL KUBE-SYSTEM PODS ==="
+        kubectl get pods -n kube-system -o wide
+        echo ""
+        echo "=== NODE TAINTS ==="
+        kubectl get nodes -o custom-columns=NAME:.metadata.name,TAINTS:.spec.taints
+        echo ""
+        echo "=== CLUSTER INFO ==="
+        kubectl cluster-info
+      register: cluster_summary
+      environment:
+        KUBECONFIG: /etc/kubernetes/admin.conf
+      tags:
+        - summary
+        - final
+
+    - name: Display cluster summary
+      debug:
+        msg: "{{ cluster_summary.stdout_lines }}"
+      tags:
+        - summary
+        - final
+
+    - name: Save cluster summary to file
+      copy:
+        content: "{{ cluster_summary.stdout }}"
+        dest: "{{ manifests_dir }}/../cluster-deployment-summary.txt"
+        mode: '0644'
+      tags:
+        - summary
+        - save
+
+    - name: Copy admin.conf to local workspace for external access
+      fetch:
+        src: /etc/kubernetes/admin.conf
+        dest: "{{ manifests_dir }}/../admin.conf"
+        flat: yes
+        mode: '0600'
+      tags:
+        - kubeconfig
+        - copy

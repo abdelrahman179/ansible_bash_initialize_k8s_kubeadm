@@ -1,0 +1,187 @@
+---
+- name: Install Docker on Ubuntu/Debian systems
+  hosts: all
+  become: yes
+  gather_facts: yes
+  vars:
+    docker_packages:
+      - docker-ce
+      - docker-ce-cli
+      - containerd.io
+      - docker-buildx-plugin
+      - docker-compose-plugin
+    
+  tasks:
+    - name: Update apt package index
+      apt:
+        update_cache: yes
+        cache_valid_time: 3600
+      tags:
+        - docker
+        - preparation
+
+    - name: Install required packages for Docker repository
+      apt:
+        name:
+          - ca-certificates
+          - curl
+        state: present
+        update_cache: yes
+      tags:
+        - docker
+        - preparation
+
+    - name: Create directory for apt keyrings
+      file:
+        path: /etc/apt/keyrings
+        state: directory
+        mode: '0755'
+      tags:
+        - docker
+        - preparation
+
+    - name: Download Docker's official GPG key
+      get_url:
+        url: https://download.docker.com/linux/ubuntu/gpg
+        dest: /etc/apt/keyrings/docker.asc
+        mode: '0644'
+      tags:
+        - docker
+        - repository
+
+    - name: Get system architecture
+      command: dpkg --print-architecture
+      register: system_arch
+      changed_when: false
+      tags:
+        - docker
+        - repository
+
+    - name: Get Ubuntu codename
+      shell: . /etc/os-release && echo "${UBUNTU_CODENAME:-$VERSION_CODENAME}"
+      register: ubuntu_codename
+      changed_when: false
+      tags:
+        - docker
+        - repository
+
+    - name: Add Docker repository to apt sources
+      apt_repository:
+        repo: "deb [arch={{ system_arch.stdout }} signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/ubuntu {{ ubuntu_codename.stdout }} stable"
+        filename: docker
+        state: present
+      tags:
+        - docker
+        - repository
+
+    - name: Update apt package index after adding Docker repository
+      apt:
+        update_cache: yes
+      tags:
+        - docker
+        - repository
+
+    - name: Install Docker packages
+      apt:
+        name: "{{ docker_packages }}"
+        state: present
+        update_cache: yes
+      tags:
+        - docker
+        - installation
+
+    - name: Enable Docker service
+      systemd:
+        name: docker
+        enabled: yes
+        daemon_reload: yes
+      tags:
+        - docker
+        - service
+
+    - name: Start Docker service
+      systemd:
+        name: docker
+        state: started
+      tags:
+        - docker
+        - service
+
+    - name: Check if Docker is installed
+      command: which docker
+      register: docker_installed
+      changed_when: false
+      failed_when: false
+      tags:
+        - docker
+        - verification
+
+    - name: Check Docker service status
+      systemd:
+        name: docker
+      register: docker_service_status
+      when: docker_installed.rc == 0
+      failed_when: false
+      tags:
+        - docker
+        - verification
+
+    - name: Display Docker service status
+      debug:
+        msg: "Docker service is {{ docker_service_status.status.ActiveState | default('not installed') }}"
+      when: docker_installed.rc == 0
+      tags:
+        - docker
+        - verification
+
+    - name: Display Docker not installed message
+      debug:
+        msg: "Docker is not installed on this node"
+      when: docker_installed.rc != 0
+      tags:
+        - docker
+        - verification
+
+    - name: Verify Docker installation
+      command: docker --version
+      register: docker_version
+      changed_when: false
+      when: docker_installed.rc == 0
+      tags:
+        - docker
+        - verification
+
+    - name: Display Docker version
+      debug:
+        msg: "{{ docker_version.stdout }}"
+      when: docker_installed.rc == 0 and docker_version.stdout is defined
+      tags:
+        - docker
+        - verification
+
+    - name: Add users to docker group (optional)
+      user:
+        name: "{{ ansible_user }}"
+        groups: docker
+        append: yes
+      when: add_user_to_docker_group | default(false)
+      tags:
+        - docker
+        - user_permissions
+
+    - name: Test Docker installation with hello-world
+      command: docker run --rm hello-world
+      register: docker_test
+      changed_when: false
+      when: test_docker_installation | default(false)
+      tags:
+        - docker
+        - testing
+
+    - name: Display Docker test results
+      debug:
+        msg: "Docker test successful"
+      when: test_docker_installation | default(false) and docker_test.rc == 0
+      tags:
+        - docker
+        - testing
