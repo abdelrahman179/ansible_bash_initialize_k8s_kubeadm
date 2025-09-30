@@ -1339,6 +1339,17 @@ cp admin.conf admin.conf.backup
 tar -czf cluster-backup-$(date +%Y%m%d).tar.gz admin.conf inventory.ini group_vars/
 ```
 
+
+### Setup Monitoring {Optiona}
+```bash
+# Prometheus Stack
+helm install prometheus-stack -n monitoring prometheus-community/kube-prometheus-stack -f manifests/values-kube-prometheus-stack.yaml --create-namespace 
+
+# Loki Stack
+helm upgrade --install loki --namespace=monitoring grafana/loki-stack
+ -f manifests/values-loki-stack.yaml --create-namespace
+```
+
 ## 📋 Requirements Summary
 
 ### Hardware Requirements (Per Node)
