@@ -47,7 +47,7 @@ read_ip() {
             echo "$ip"
             break
         else
-            echo -e "${RED}Invalid IP address format. Please try again.${NC}"
+            echo -e "${RED}Invalid IP address format. Please try again.${NC}" >&2
         fi
     done
 }
@@ -76,9 +76,30 @@ while true; do
     fi
 done
 
-# Get load balancer configuration
-read -p "Include load balancer? (y/N): " INCLUDE_LB
-INCLUDE_LB=${INCLUDE_LB,,} # Convert to lowercase
+# Get load balancer configuration based on master count
+INCLUDE_LB=""
+LB_IP=""
+LB_USER=""
+
+if [[ $MASTER_COUNT -eq 1 ]]; then
+    echo -e "\n${YELLOW}Single Master Configuration:${NC}"
+    echo "With a single master, you have two options:"
+    echo "1. Use master node's API directly (${MASTER_IPS[0]}:6443)"
+    echo "2. Use a dedicated load balancer for future scalability"
+    echo
+    read -p "Do you want to include a load balancer? (y/N): " INCLUDE_LB
+    INCLUDE_LB=${INCLUDE_LB,,} # Convert to lowercase
+    
+    if [[ "$INCLUDE_LB" == "y" || "$INCLUDE_LB" == "yes" ]]; then
+        echo -e "${GREEN}✅ Load balancer will be configured for future scalability${NC}"
+    else
+        echo -e "${BLUE}ℹ️  Using master node API directly (simpler setup)${NC}"
+    fi
+else
+    echo -e "\n${YELLOW}Multi-Master Configuration:${NC}"
+    echo "Multiple masters detected - load balancer is ${GREEN}REQUIRED${NC} for high availability"
+    INCLUDE_LB="yes"
+fi
 
 # Get password securely
 echo
@@ -267,10 +288,14 @@ echo "  2. 🐳 install-docker.sh"
 echo "  3. ☸️  install-kubernetes.sh"
 if [[ -n "$LB_IP" ]]; then
     echo "  4. ⚖️  install-haproxy.sh (Load Balancer detected)"
+    echo "  5. 🚀 initialize-cluster.sh"
+    echo "  6. 🕸️  deploy-weave.sh"
+    echo "  7. 💾 setup-nfs-storage.sh"
+else
+    echo "  4. 🚀 initialize-cluster.sh"
+    echo "  5. 🕸️  deploy-weave.sh"
+    echo "  6. 💾 setup-nfs-storage.sh"
 fi
-echo "  $(( [[ -n "$LB_IP" ]] && echo "5" || echo "4" )). 🚀 initialize-cluster.sh"
-echo "  $(( [[ -n "$LB_IP" ]] && echo "6" || echo "5" )). 🕸️  deploy-weave.sh"
-echo "  $(( [[ -n "$LB_IP" ]] && echo "7" || echo "6" )). 💾 setup-nfs-storage.sh"
 echo
 
 read -p "Run automatic setup? (y/N): " AUTO_SETUP
@@ -298,7 +323,11 @@ if [[ "$AUTO_SETUP" == "y" || "$AUTO_SETUP" == "yes" ]]; then
     echo
     
     while true; do
-        total_nodes=$((MASTER_COUNT + WORKER_COUNT + ([[ -n "$LB_IP" ]] && 1 || 0)))
+        if [[ -n "$LB_IP" ]]; then
+            total_nodes=$((MASTER_COUNT + WORKER_COUNT + 1))
+        else
+            total_nodes=$((MASTER_COUNT + WORKER_COUNT))
+        fi
         read -p "Select NFS server node (1-$total_nodes) [1]: " nfs_choice
         nfs_choice=${nfs_choice:-1}
         if [[ "$nfs_choice" =~ ^[1-9][0-9]*$ ]] && [[ $nfs_choice -le $total_nodes ]]; then
@@ -350,11 +379,15 @@ if [[ "$AUTO_SETUP" == "y" || "$AUTO_SETUP" == "yes" ]]; then
     echo "  2. Docker installation"
     echo "  3. Kubernetes installation"
     if [[ -n "$LB_IP" ]]; then
-        echo "  4. HAProxy installation"
+        echo "  4. HAProxy installation (Load Balancer)"
+        echo "  5. Cluster initialization"
+        echo "  6. Weave CNI deployment"
+        echo "  7. NFS storage setup"
+    else
+        echo "  4. Cluster initialization (Single Master)"
+        echo "  5. Weave CNI deployment"
+        echo "  6. NFS storage setup"
     fi
-    echo "  $(( [[ -n "$LB_IP" ]] && echo "5" || echo "4" )). Cluster initialization"
-    echo "  $(( [[ -n "$LB_IP" ]] && echo "6" || echo "5" )). Weave CNI deployment"
-    echo "  $(( [[ -n "$LB_IP" ]] && echo "7" || echo "6" )). NFS storage setup"
     echo
     
     read -p "Proceed with automatic setup? (y/N): " CONFIRM_AUTO
@@ -482,18 +515,30 @@ print_manual_steps() {
         echo "   ./install-haproxy.sh"
         echo "   ${GREEN}Purpose:${NC} Configures load balancer for cluster API"
         echo
+        echo -e "${YELLOW}5. Initialize Cluster:${NC}"
+        echo "   ./initialize-cluster.sh"
+        echo "   ${GREEN}Purpose:${NC} Initializes the cluster and joins nodes"
+        echo
+        echo -e "${YELLOW}6. Deploy Weave CNI:${NC}"
+        echo "   ./deploy-weave.sh"
+        echo "   ${GREEN}Purpose:${NC} Installs network plugin for pod communication"
+        echo
+        echo -e "${YELLOW}7. Setup NFS Storage:${NC}"
+        echo "   ./setup-nfs-storage.sh"
+        echo "   ${GREEN}Purpose:${NC} Configures NFS and local-path-provisioner"
+    else
+        echo -e "${YELLOW}4. Initialize Cluster:${NC}"
+        echo "   ./initialize-cluster.sh"
+        echo "   ${GREEN}Purpose:${NC} Initializes the cluster and joins nodes"
+        echo
+        echo -e "${YELLOW}5. Deploy Weave CNI:${NC}"
+        echo "   ./deploy-weave.sh"
+        echo "   ${GREEN}Purpose:${NC} Installs network plugin for pod communication"
+        echo
+        echo -e "${YELLOW}6. Setup NFS Storage:${NC}"
+        echo "   ./setup-nfs-storage.sh"
+        echo "   ${GREEN}Purpose:${NC} Configures NFS and local-path-provisioner"
     fi
-    echo -e "${YELLOW}$(( [[ -n "$LB_IP" ]] && echo "5" || echo "4" )). Initialize Cluster:${NC}"
-    echo "   ./initialize-cluster.sh"
-    echo "   ${GREEN}Purpose:${NC} Initializes the cluster and joins nodes"
-    echo
-    echo -e "${YELLOW}$(( [[ -n "$LB_IP" ]] && echo "6" || echo "5" )). Deploy Weave CNI:${NC}"
-    echo "   ./deploy-weave.sh"
-    echo "   ${GREEN}Purpose:${NC} Installs network plugin for pod communication"
-    echo
-    echo -e "${YELLOW}$(( [[ -n "$LB_IP" ]] && echo "7" || echo "6" )). Setup NFS Storage:${NC}"
-    echo "   ./setup-nfs-storage.sh"
-    echo "   ${GREEN}Purpose:${NC} Configures NFS and local-path-provisioner"
     echo
     echo -e "${YELLOW}Important Notes:${NC}"
     echo "  • Run scripts in the exact order shown above"
